@@ -210,7 +210,8 @@ def main():
     p.add_argument("--threads", type=int, default=os.cpu_count() or 4)
     p.add_argument("--keep-context", action="store_true",
                    help="30秒窓間で文脈を引き継ぐ (既定は無効。有効にすると静かな音声で"
-                        "同一文の反復ハルシネーションが起きることがある)")
+                        "同一文の反復ハルシネーションが起きることがある。注意: whisper.cpp の"
+                        "no_context は窓間の文脈引き継ぎを止めないため、n_max_text_ctx=0 で切る)")
     args = p.parse_args()
 
     audio = Path(args.audio)
@@ -227,8 +228,11 @@ def main():
 
         print(f"[mirror-whisper] 文字起こし中 (model={args.model}, threads={args.threads})…", file=sys.stderr)
         from pywhispercpp.model import Model
-        m = Model(str(model_path), n_threads=args.threads,
-                  no_context=not args.keep_context)
+        # n_max_text_ctx=0 が窓間の文脈引き継ぎを完全に断つ唯一のノブ。
+        # (no_context=True は whisper_full 冒頭で履歴を消すだけで、同一呼び出し内の
+        #  窓間では prompt_past1 が常に引き継がれ、静かな窓の幻覚が全体に伝搬する)
+        ctx_params = {} if args.keep_context else {"n_max_text_ctx": 0}
+        m = Model(str(model_path), n_threads=args.threads, **ctx_params)
         segments = m.transcribe(str(wav), language=args.lang)
     finally:
         wav.unlink(missing_ok=True)
