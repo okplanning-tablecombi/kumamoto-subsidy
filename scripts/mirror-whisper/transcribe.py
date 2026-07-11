@@ -173,18 +173,26 @@ def ensure_model(name: str) -> Path:
 
 
 def to_wav16k(audio_path: Path, wav_path: Path):
+    """16kHz モノラルに変換し、ピーク正規化 (0.95) して書き出す。"""
     import av
+    import numpy as np
+    import wave
     container = av.open(str(audio_path))
     stream = container.streams.audio[0]
     resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
-    import wave
+    chunks = []
+    for frame in container.decode(stream):
+        for f in resampler.resample(frame):
+            chunks.append(f.to_ndarray().flatten())
+    x = np.concatenate(chunks).astype(np.float32)
+    peak = np.abs(x).max()
+    if peak > 0:
+        x = x * (0.95 * 32767 / peak)
     with wave.open(str(wav_path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(16000)
-        for frame in container.decode(stream):
-            for f in resampler.resample(frame):
-                w.writeframes(f.to_ndarray().tobytes())
+        w.writeframes(np.clip(x, -32768, 32767).astype(np.int16).tobytes())
 
 
 def fmt_ts(centisec: float) -> str:
@@ -200,6 +208,9 @@ def main():
                    help="large-v3=高精度(既定・3GB) / tiny=動作確認用(78MB)")
     p.add_argument("--out", default=None, help="出力 Markdown パス (既定: <入力名>.transcript.md)")
     p.add_argument("--threads", type=int, default=os.cpu_count() or 4)
+    p.add_argument("--keep-context", action="store_true",
+                   help="30秒窓間で文脈を引き継ぐ (既定は無効。有効にすると静かな音声で"
+                        "同一文の反復ハルシネーションが起きることがある)")
     args = p.parse_args()
 
     audio = Path(args.audio)
@@ -216,7 +227,8 @@ def main():
 
         print(f"[mirror-whisper] 文字起こし中 (model={args.model}, threads={args.threads})…", file=sys.stderr)
         from pywhispercpp.model import Model
-        m = Model(str(model_path), n_threads=args.threads)
+        m = Model(str(model_path), n_threads=args.threads,
+                  no_context=not args.keep_context)
         segments = m.transcribe(str(wav), language=args.lang)
     finally:
         wav.unlink(missing_ok=True)
